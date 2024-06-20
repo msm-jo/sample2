@@ -255,3 +255,60 @@ builder.Services.AddMassTransitResponder<BasketQuoteResponse>(config.Get<Messagi
 var app = builder.Build();
 
 app.Run();
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.Collections.Generic;
+
+public static class MassTransitExtensions
+{
+    public static void AddMassTransitConsumers(this IServiceCollection services, MessagingConfig config, List<Type> consumerTypes)
+    {
+        services.AddMassTransit(x =>
+        {
+            foreach (var consumerType in consumerTypes)
+            {
+                x.AddConsumer(consumerType);
+            }
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    foreach (var consumerType in consumerTypes)
+                    {
+                        cfg.ReceiveEndpoint(consumerType.Name, e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+                        });
+                    }
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    foreach (var consumerType in consumerTypes)
+                    {
+                        cfg.SubscriptionEndpoint(consumerType.Name, e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+                        });
+                    }
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
+
