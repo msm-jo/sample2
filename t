@@ -1,4 +1,4 @@
-using MassTransit;
+but using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -83,3 +83,110 @@ builder.Services.AddMassTransitConsumers(config, new List<(Type, string, Type)>
 var app = builder.Build();
 
 app.Run();
+
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.Collections.Generic;
+
+public static class MassTransitExtensions
+{
+    public static IServiceCollection AddMassTransitConsumers(this IServiceCollection services, MessagingConfig config, List<(Type consumerType, string queueName, Type requestType)> consumerConfig)
+    {
+        services.AddMassTransit(x =>
+        {
+            foreach (var (consumerType, _, _) in consumerConfig)
+            {
+                x.AddConsumer(consumerType);
+            }
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    foreach (var (consumerType, queueName, _) in consumerConfig)
+                    {
+                        cfg.ReceiveEndpoint(queueName, e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+                        });
+                    }
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    foreach (var (consumerType, queueName, requestType) in consumerConfig)
+                    {
+                        var method = typeof(IServiceBusBusFactoryConfigurator)
+                            .GetMethod("SubscriptionEndpoint", new[] { typeof(string), typeof(Action<IServiceBusSubscriptionEndpointConfigurator>) })
+                            ?.MakeGenericMethod(requestType);
+                        
+                        method?.Invoke(cfg, new object[] { queueName, new Action<IServiceBusSubscriptionEndpointConfigurator>(e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+                        }) });
+                    }
+                });
+            }
+        });
+
+        // Register the message stores for each request type
+        foreach (var (_, _, requestType) in consumerConfig)
+        {
+            var messageStoreType = typeof(MessageStore<>).MakeGenericType(requestType);
+            var iMessageStoreType = typeof(IMessageStore<>).MakeGenericType(requestType);
+            services.AddSingleton(iMessageStoreType, messageStoreType);
+        }
+
+        services.AddMassTransitHostedService();
+
+        return services;
+    }
+
+    public static IServiceCollection AddMassTransitPublishers(this IServiceCollection services, MessagingConfig config, List<Type> publisherRequestTypes)
+    {
+        services.AddMassTransit(x =>
+        {
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+                });
+            }
+        });
+
+        foreach (var requestType in publisherRequestTypes)
+        {
+            var publisherType = typeof(GenericPublisher<>).MakeGenericType(requestType);
+            services.AddSingleton(publisherType);
+        }
+
+        services.AddMassTransitHostedService();
+
+        return services;
+    }
+}
+
