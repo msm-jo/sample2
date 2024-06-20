@@ -1,0 +1,257 @@
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+
+public static class MassTransitExtensions
+{
+    public static void AddMassTransitConsumer<TRequest, TResponse>(this IServiceCollection services, MessagingConfig config)
+        where TRequest : class
+        where TResponse : class
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<ConsumerWithResponse<TRequest, TResponse>>();
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(typeof(TRequest).Name, e =>
+                    {
+                        e.ConfigureConsumer<ConsumerWithResponse<TRequest, TResponse>>(context);
+                    });
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.SubscriptionEndpoint<TRequest>(typeof(TRequest).Name, e =>
+                    {
+                        e.ConfigureConsumer<ConsumerWithResponse<TRequest, TResponse>>(context);
+                    });
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+
+    public static void AddMassTransitResponder<TResponse>(this IServiceCollection services, MessagingConfig config)
+        where TResponse : class
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<ResponseConsumer<TResponse>>();
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(typeof(TResponse).Name, e =>
+                    {
+                        e.ConfigureConsumer<ResponseConsumer<TResponse>>(context);
+                    });
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.SubscriptionEndpoint<TResponse>(typeof(TResponse).Name, e =>
+                    {
+                        e.ConfigureConsumer<ResponseConsumer<TResponse>>(context);
+                    });
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+
+public static class MassTransitExtensions
+{
+    public static void AddMassTransitConsumer<TRequest, TResponse>(this IServiceCollection services, MessagingConfig config)
+        where TRequest : class
+        where TResponse : class
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<ConsumerWithResponse<TRequest, TResponse>>();
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(typeof(TRequest).Name, e =>
+                    {
+                        e.ConfigureConsumer<ConsumerWithResponse<TRequest, TResponse>>(context);
+                    });
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.SubscriptionEndpoint<TRequest>(typeof(TRequest).Name, e =>
+                    {
+                        e.ConfigureConsumer<ConsumerWithResponse<TRequest, TResponse>>(context);
+                    });
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+
+    public static void AddMassTransitResponder<TResponse>(this IServiceCollection services, MessagingConfig config)
+        where TResponse : class
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<ResponseConsumer<TResponse>>();
+
+            if (config.Transport == TransportType.RabbitMQ)
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(typeof(TResponse).Name, e =>
+                    {
+                        e.ConfigureConsumer<ResponseConsumer<TResponse>>(context);
+                    });
+                });
+            }
+            else if (config.Transport == TransportType.AzureServiceBus)
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.SubscriptionEndpoint<TResponse>(typeof(TResponse).Name, e =>
+                    {
+                        e.ConfigureConsumer<ResponseConsumer<TResponse>>(context);
+                    });
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+public class ConsumerWithResponse<TRequest, TResponse> : IConsumer<TRequest>
+    where TRequest : class
+    where TResponse : class, new()
+{
+    private readonly ILogger<ConsumerWithResponse<TRequest, TResponse>> _logger;
+    private readonly IBusinessLogic<TRequest, TResponse> _businessLogic;
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public ConsumerWithResponse(ILogger<ConsumerWithResponse<TRequest, TResponse>> logger, IBusinessLogic<TRequest, TResponse> businessLogic, IPublishEndpoint publishEndpoint)
+    {
+        _logger = logger;
+        _businessLogic = businessLogic;
+        _publishEndpoint = publishEndpoint;
+    }
+
+    public async Task Consume(ConsumeContext<TRequest> context)
+    {
+        _logger.LogInformation($"Received request of type {typeof(TRequest).Name}: {context.Message}");
+
+        TResponse response = _businessLogic.Process(context.Message);
+
+        // Publish the response to the response queue
+        await _publishEndpoint.Publish(response);
+    }
+}
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+public class ResponseConsumer<TResponse> : IConsumer<TResponse>
+    where TResponse : class
+{
+    private readonly ILogger<ResponseConsumer<TResponse>> _logger;
+
+    public ResponseConsumer(ILogger<ResponseConsumer<TResponse>> logger)
+    {
+        _logger = logger;
+    }
+
+    public Task Consume(ConsumeContext<TResponse> context)
+    {
+        _logger.LogInformation($"Received response of type {typeof(TResponse).Name}: {context.Message}");
+        // Implement your response processing logic here
+        return Task.CompletedTask;
+    }
+}
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Load configuration
+var config = builder.Configuration.GetSection("MessagingConfig");
+builder.Services.Configure<MessagingConfig>(config);
+
+// Register MassTransit consumer
+builder.Services.AddMassTransitConsumer<BasketQuoteRequest, BasketQuoteResponse>(config.Get<MessagingConfig>());
+
+var app = builder.Build();
+
+app.Run();
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Load configuration
+var config = builder.Configuration.GetSection("MessagingConfig");
+builder.Services.Configure<MessagingConfig>(config);
+
+// Register MassTransit responder
+builder.Services.AddMassTransitResponder<BasketQuoteResponse>(config.Get<MessagingConfig>());
+
+var app = builder.Build();
+
+app.Run();
