@@ -1,0 +1,206 @@
+public interface IBusinessLogic<TRequest, TResponse>
+{
+    TResponse Process(TRequest request);
+}
+
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+public class GenericResponder<TRequest, TResponse> : IConsumer<TRequest>
+    where TRequest : class
+    where TResponse : class, new()
+{
+    private readonly ILogger<GenericResponder<TRequest, TResponse>> _logger;
+    private readonly IBusinessLogic<TRequest, TResponse> _businessLogic;
+
+    public GenericResponder(ILogger<GenericResponder<TRequest, TResponse>> logger, IBusinessLogic<TRequest, TResponse> businessLogic)
+    {
+        _logger = logger;
+        _businessLogic = businessLogic;
+    }
+
+    public async Task Consume(ConsumeContext<TRequest> context)
+    {
+        _logger.LogInformation($"Received request of type {typeof(TRequest).Name}: {context.Message}");
+
+        TResponse response = _businessLogic.Process(context.Message);
+
+        await context.RespondAsync(response);
+    }
+}
+public class BasketQuoteBusinessLogic : IBusinessLogic<BasketQuoteRequest, BasketQuoteResponse>
+{
+    public BasketQuoteResponse Process(BasketQuoteRequest request)
+    {
+        // Implement your business logic here
+        return new BasketQuoteResponse
+        {
+            QuoteId = "Q12345",
+            Price = request.Quantity * 10.0m, // Example logic for calculating price
+            Success = true,
+            ErrorMessage = null
+        };
+    }
+}
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        CreateHostBuilder(args).Build().Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                var config = hostContext.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+                services.AddMassTransit(x =>
+                {
+                    if (config.Transport == TransportType.RabbitMQ)
+                    {
+                        x.UsingRabbitMq((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString, h =>
+                            {
+                                h.Username(config.UserName);
+                                h.Password(config.Password);
+                            });
+                        });
+                    }
+                    else if (config.Transport == TransportType.AzureServiceBus)
+                    {
+                        x.UsingAzureServiceBus((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString);
+                        });
+                    }
+                });
+
+                services.AddMassTransitHostedService();
+
+                services.AddSingleton(typeof(GenericRequester<,>));
+            });
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class GenericRequester<TRequest, TResponse>
+    where TRequest : class
+    where TResponse : class
+{
+    private readonly IRequestClient<TRequest> _requestClient;
+
+    public GenericRequester(IRequestClient<TRequest> requestClient)
+    {
+        _requestClient = requestClient;
+    }
+
+    public async Task<TResponse> Request(TRequest request)
+    {
+        var response = await _requestClient.GetResponse<TResponse>(request);
+        return response.Message;
+    }
+}
+
+using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
+
+[ApiController]
+[Route("api/[controller]")]
+public class MessagesController : ControllerBase
+{
+    private readonly GenericRequester<BasketQuoteRequest, BasketQuoteResponse> _requester;
+
+    public MessagesController(GenericRequester<BasketQuoteRequest, BasketQuoteResponse> requester)
+    {
+        _requester = requester;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Post([FromBody] BasketQuoteRequest request)
+    {
+        BasketQuoteResponse response = await _requester.Request(request);
+        return Ok(response);
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        CreateHostBuilder(args).Build().Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                var config = hostContext.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+                services.AddMassTransit(x =>
+                {
+                    x.AddConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>();
+
+                    if (config.Transport == TransportType.RabbitMQ)
+                    {
+                        x.UsingRabbitMq((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString, h =>
+                            {
+                                h.Username(config.UserName);
+                                h.Password(config.Password);
+                            });
+
+                            cfg.ReceiveEndpoint(typeof(BasketQuoteRequest).Name, e =>
+                            {
+                                e.ConfigureConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>(context);
+                            });
+                        });
+                    }
+                    else if (config.Transport == TransportType.AzureServiceBus)
+                    {
+                        x.UsingAzureServiceBus((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString);
+
+                            cfg.SubscriptionEndpoint<BasketQuoteRequest>(typeof(BasketQuoteRequest).Name, e =>
+                            {
+                                e.ConfigureConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>(context);
+                            });
+                        });
+                    }
+                });
+
+                services.AddMassTransitHostedService();
+
+                // Register the business logic implementation
+                services.AddSingleton<IBusinessLogic<BasketQuoteRequest, BasketQuoteResponse>, BasketQuoteBusinessLogic>();
+            });
+}
+public class BasketQuoteRequest
+{
+    public string ProductId { get; set; }
+    public int Quantity { get; set; }
+}
+
+public class BasketQuoteResponse
+{
+    public string QuoteId { get; set; }
+    public decimal Price { get; set; }
+    public bool Success { get; set; }
+    public string ErrorMessage { get; set; }
+}
+
+
+
