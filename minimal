@@ -1,0 +1,58 @@
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+
+public static class MassTransitSetup
+{
+    public static void ConfigureMassTransit(IServiceCollection services, IConfiguration config)
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>();
+            x.AddConsumer<AnotherConsumer>();
+
+            if (config.GetValue<string>("Transport") == "RabbitMQ")
+            {
+                x.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.GetValue<string>("ConnectionString"), h =>
+                    {
+                        h.Username(config.GetValue<string>("UserName"));
+                        h.Password(config.GetValue<string>("Password"));
+                    });
+
+                    // Register multiple endpoints with different configurations
+                    cfg.ReceiveEndpoint("quote-endpoint", e =>
+                    {
+                        e.ConfigureConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>(context);
+                    });
+
+                    cfg.ReceiveEndpoint("another-endpoint", e =>
+                    {
+                        e.ConfigureConsumer<AnotherConsumer>(context);
+                    });
+                });
+            }
+            else if (config.GetValue<string>("Transport") == "AzureServiceBus")
+            {
+                x.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.GetValue<string>("ConnectionString"));
+
+                    // Register multiple endpoints with different configurations
+                    cfg.SubscriptionEndpoint<BasketQuoteRequest>("quote-endpoint", e =>
+                    {
+                        e.ConfigureConsumer<GenericResponder<BasketQuoteRequest, BasketQuoteResponse>>(context);
+                    });
+
+                    cfg.SubscriptionEndpoint<AnotherRequest>("another-endpoint", e =>
+                    {
+                        e.ConfigureConsumer<AnotherConsumer>(context);
+                    });
+                });
+            }
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
