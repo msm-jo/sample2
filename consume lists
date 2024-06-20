@@ -312,3 +312,26 @@ public static class MassTransitExtensions
     }
 }
 
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+using System;
+using System.Collections.Generic;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Load configuration
+var config = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+// Register MassTransit consumers
+builder.Services.AddMassTransitConsumers(config, new List<Type>
+{
+    typeof(ConsumerWithResponse<BasketQuoteRequest, BasketQuoteResponse>),
+    typeof(ConsumerWithResponse<AnotherRequest, AnotherResponse>)
+});
+
+var app = builder.Build();
+
+app.Run();
+
