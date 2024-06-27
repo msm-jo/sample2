@@ -1,0 +1,234 @@
+Creating a generic library for MassTransit that supports different message brokers like RabbitMQ and Azure Service Bus, along with the features you specified, involves several steps. Below is a basic implementation to get you started. This implementation includes:
+
+1. Configuration for multiple bus instances.
+2. Generic publisher and consumer with filter options.
+3. Request-response model.
+4. Support for business logic with dependency injection.
+5. Fan-out messaging options.
+
+Let's create a structured approach:
+
+1. **Define the common interfaces and models.**
+2. **Implement the bus configuration.**
+3. **Create generic publisher and consumer classes.**
+4. **Setup request-response mechanism.**
+5. **Enable dependency injection for business logic.**
+
+### Step 1: Define Common Interfaces and Models
+
+```csharp
+// IMessage.cs
+public interface IMessage
+{
+    Guid Id { get; }
+    DateTime Timestamp { get; }
+}
+
+// IFilterableMessage.cs
+public interface IFilterableMessage : IMessage
+{
+    string Filter { get; }
+}
+```
+
+### Step 2: Implement Bus Configuration
+
+```csharp
+// BusConfigurator.cs
+public static class BusConfigurator
+{
+    public static IBusControl ConfigureBus(string busType, Action<IBusFactoryConfigurator, IServiceProvider> registrationAction)
+    {
+        switch (busType.ToLower())
+        {
+            case "rabbitmq":
+                return Bus.Factory.CreateUsingRabbitMq(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            case "servicebus":
+                return Bus.Factory.CreateUsingAzureServiceBus(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            default:
+                throw new ArgumentException("Invalid bus type");
+        }
+    }
+}
+```
+
+### Step 3: Create Generic Publisher and Consumer Classes
+
+```csharp
+// Publisher.cs
+public class Publisher<T> where T : class, IMessage
+{
+    private readonly IBusControl _bus;
+
+    public Publisher(IBusControl bus)
+    {
+        _bus = bus;
+    }
+
+    public async Task PublishAsync(T message)
+    {
+        await _bus.Publish(message);
+    }
+}
+
+// Consumer.cs
+public class Consumer<T> : IConsumer<T> where T : class, IFilterableMessage
+{
+    private readonly string _filter;
+    private readonly Func<T, Task> _handleMessage;
+
+    public Consumer(string filter, Func<T, Task> handleMessage)
+    {
+        _filter = filter;
+        _handleMessage = handleMessage;
+    }
+
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        if (context.Message.Filter == _filter)
+        {
+            await _handleMessage(context.Message);
+        }
+    }
+}
+```
+
+### Step 4: Setup Request-Response Mechanism
+
+```csharp
+// IRequest.cs
+public interface IRequest<TResponse>
+{
+}
+
+// IResponse.cs
+public interface IResponse
+{
+}
+
+// RequestClient.cs
+public class RequestClient<TRequest, TResponse>
+    where TRequest : class, IRequest<TResponse>
+    where TResponse : class, IResponse
+{
+    private readonly IRequestClient<TRequest> _client;
+
+    public RequestClient(IRequestClient<TRequest> client)
+    {
+        _client = client;
+    }
+
+    public async Task<TResponse> RequestAsync(TRequest request)
+    {
+        var response = await _client.GetResponse<TResponse>(request);
+        return response.Message;
+    }
+}
+```
+
+### Step 5: Enable Dependency Injection for Business Logic
+
+```csharp
+// BusinessLogicConsumer.cs
+public class BusinessLogicConsumer<T> : IConsumer<T> where T : class, IFilterableMessage
+{
+    private readonly IBusinessLogic<T> _businessLogic;
+
+    public BusinessLogicConsumer(IBusinessLogic<T> businessLogic)
+    {
+        _businessLogic = businessLogic;
+    }
+
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        await _businessLogic.ExecuteAsync(context.Message);
+    }
+}
+
+// IBusinessLogic.cs
+public interface IBusinessLogic<T>
+{
+    Task ExecuteAsync(T message);
+}
+```
+
+### Step 6: Fan-out Options and Registration
+
+```csharp
+// Startup.cs
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        // Register MassTransit
+        services.AddMassTransit(x =>
+        {
+            x.AddBus(provider => BusConfigurator.ConfigureBus("rabbitmq", (cfg, sp) =>
+            {
+                cfg.ReceiveEndpoint("my-queue", ep =>
+                {
+                    ep.Consumer(() => new Consumer<FilterableMessage>("my-filter", async (msg) =>
+                    {
+                        // Handle message
+                    }));
+
+                    ep.Consumer<BusinessLogicConsumer<FilterableMessage>>();
+                });
+            }));
+
+            x.AddRequestClient<MyRequest>();
+        });
+
+        // Register business logic
+        services.AddTransient<IBusinessLogic<FilterableMessage>, MyBusinessLogic>();
+
+        services.AddMassTransitHostedService();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure app
+    }
+}
+```
+
+### Example Usage in API
+
+```csharp
+// MyController.cs
+[ApiController]
+[Route("[controller]")]
+public class MyController : ControllerBase
+{
+    private readonly Publisher<FilterableMessage> _publisher;
+    private readonly RequestClient<MyRequest, MyResponse> _requestClient;
+
+    public MyController(Publisher<FilterableMessage> publisher, RequestClient<MyRequest, MyResponse> requestClient)
+    {
+        _publisher = publisher;
+        _requestClient = requestClient;
+    }
+
+    [HttpPost("publish")]
+    public async Task<IActionResult> Publish(FilterableMessage message)
+    {
+        await _publisher.PublishAsync(message);
+        return Ok();
+    }
+
+    [HttpPost("request")]
+    public async Task<IActionResult> Request(MyRequest request)
+    {
+        var response = await _requestClient.RequestAsync(request);
+        return Ok(response);
+    }
+}
+```
+
+This setup provides a foundation for a MassTransit-based library supporting RabbitMQ and Azure Service Bus with filtering options, request-response model, multi-bus setup, and DI for business logic. You can extend this further based on specific requirements.
