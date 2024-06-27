@@ -1,0 +1,153 @@
+
+### Step 1: Define Interfaces and Models
+
+These interfaces and models can be reused from the previous example.
+
+### Step 2: Implement Consumer with Filtering and Republishing Logic
+
+```csharp
+// FilteredProcessingConsumer.cs
+public class FilteredProcessingConsumer<T> : IConsumer<T> where T : class, IFilterableMessage
+{
+    private readonly string _filter;
+    private readonly Func<T, Task<T>> _processMessage;
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public FilteredProcessingConsumer(string filter, Func<T, Task<T>> processMessage, IPublishEndpoint publishEndpoint)
+    {
+        _filter = filter;
+        _processMessage = processMessage;
+        _publishEndpoint = publishEndpoint;
+    }
+
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        if (context.Message.Filter == _filter)
+        {
+            var processedMessage = await _processMessage(context.Message);
+            await _publishEndpoint.Publish(processedMessage);
+        }
+    }
+}
+```
+
+### Step 3: Register the Consumer and Configure the Bus
+
+```csharp
+// Startup.cs
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddMassTransit(x =>
+        {
+            // Configure RabbitMQ bus
+            x.AddBus(provider => BusConfigurator.ConfigureBus("rabbitmq", (cfg, sp) =>
+            {
+                cfg.Host("rabbitmq://localhost", h =>
+                {
+                    h.Username("guest");
+                    h.Password("guest");
+                });
+
+                cfg.ReceiveEndpoint("rabbitmq-queue", ep =>
+                {
+                    ep.Consumer(() => new FilteredProcessingConsumer<FilterableMessage>(
+                        "my-filter", 
+                        async (msg) =>
+                        {
+                            // Apply some operation to the message
+                            msg.Content = $"Processed: {msg.Content}";
+                            return msg;
+                        }, 
+                        sp.GetRequiredService<IPublishEndpoint>()
+                    ));
+                });
+            }));
+        });
+
+        services.AddMassTransitHostedService();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure app
+    }
+}
+```
+
+### Step 4: Define the Filterable Message Model
+
+```csharp
+// FilterableMessage.cs
+public class FilterableMessage : IFilterableMessage
+{
+    public Guid Id { get; set; }
+    public DateTime Timestamp { get; set; }
+    public string Filter { get; set; }
+    public string Content { get; set; }
+}
+```
+
+### Step 5: Implement and Configure the Bus Configuration
+
+```csharp
+// BusConfigurator.cs
+public static class BusConfigurator
+{
+    public static IBusControl ConfigureBus(string busType, Action<IBusFactoryConfigurator, IServiceProvider> registrationAction)
+    {
+        switch (busType.ToLower())
+        {
+            case "rabbitmq":
+                return Bus.Factory.CreateUsingRabbitMq(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            case "servicebus":
+                return Bus.Factory.CreateUsingAzureServiceBus(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            default:
+                throw new ArgumentException("Invalid bus type");
+        }
+    }
+}
+```
+
+### Example Usage in API
+
+```csharp
+// MyController.cs
+[ApiController]
+[Route("[controller]")]
+public class MyController : ControllerBase
+{
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public MyController(IPublishEndpoint publishEndpoint)
+    {
+        _publishEndpoint = publishEndpoint;
+    }
+
+    [HttpPost("publish")]
+    public async Task<IActionResult> Publish(FilterableMessage message)
+    {
+        await _publishEndpoint.Publish(message);
+        return Ok();
+    }
+}
+```
+
+### Explanation
+
+1. **FilteredProcessingConsumer**: This consumer filters messages based on a specified filter and processes the message using a provided function. After processing, it republishes the message back to the same queue.
+
+2. **Startup Configuration**: The `FilteredProcessingConsumer` is registered with the RabbitMQ bus. The consumer processes messages that match the filter, modifies the message content, and republishes it.
+
+3. **Bus Configuration**: The `BusConfigurator` sets up the RabbitMQ bus with the appropriate configuration.
+
+4. **Controller for Publishing**: A simple API controller to publish messages to the queue for testing.
+
+This setup ensures that messages are consumed based on a filter, processed, and then republished to the same queue, allowing the system to continuously process and transform messages as needed. Adjust the filtering and processing logic according to your specific requirements.
