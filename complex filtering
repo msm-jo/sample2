@@ -1,0 +1,154 @@
+To implement complex filtering, you can enhance the filtering logic within the consumer to handle more sophisticated conditions. This might involve checking multiple properties or performing more advanced comparisons. Here's how you can set up a consumer with complex filtering:
+
+### Step 1: Define the Filterable Message Model
+
+```csharp
+// FilterableMessage.cs
+public class FilterableMessage : IFilterableMessage
+{
+    public Guid Id { get; set; }
+    public DateTime Timestamp { get; set; }
+    public string Filter { get; set; }
+    public string Content { get; set; }
+    public int Priority { get; set; }
+    public string Type { get; set; }
+}
+```
+
+### Step 2: Implement the Consumer with Complex Filtering Logic
+
+```csharp
+// ComplexFilteredProcessingConsumer.cs
+public class ComplexFilteredProcessingConsumer<T> : IConsumer<T> where T : class, IFilterableMessage
+{
+    private readonly Func<T, bool> _filterCondition;
+    private readonly Func<T, Task<T>> _processMessage;
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public ComplexFilteredProcessingConsumer(Func<T, bool> filterCondition, Func<T, Task<T>> processMessage, IPublishEndpoint publishEndpoint)
+    {
+        _filterCondition = filterCondition;
+        _processMessage = processMessage;
+        _publishEndpoint = publishEndpoint;
+    }
+
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        if (_filterCondition(context.Message))
+        {
+            var processedMessage = await _processMessage(context.Message);
+            await _publishEndpoint.Publish(processedMessage);
+        }
+    }
+}
+```
+
+### Step 3: Register the Consumer and Configure the Bus
+
+```csharp
+// Startup.cs
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddMassTransit(x =>
+        {
+            // Configure RabbitMQ bus
+            x.AddBus(provider => BusConfigurator.ConfigureBus("rabbitmq", (cfg, sp) =>
+            {
+                cfg.Host("rabbitmq://localhost", h =>
+                {
+                    h.Username("guest");
+                    h.Password("guest");
+                });
+
+                cfg.ReceiveEndpoint("rabbitmq-queue", ep =>
+                {
+                    ep.Consumer(() => new ComplexFilteredProcessingConsumer<FilterableMessage>(
+                        message => message.Priority > 5 && message.Type == "Important", // Complex filter condition
+                        async (msg) =>
+                        {
+                            // Apply some operation to the message
+                            msg.Content = $"Processed: {msg.Content}";
+                            return msg;
+                        },
+                        sp.GetRequiredService<IPublishEndpoint>()
+                    ));
+                });
+            }));
+        });
+
+        services.AddMassTransitHostedService();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure app
+    }
+}
+```
+
+### Step 4: Define the Bus Configuration
+
+```csharp
+// BusConfigurator.cs
+public static class BusConfigurator
+{
+    public static IBusControl ConfigureBus(string busType, Action<IBusFactoryConfigurator, IServiceProvider> registrationAction)
+    {
+        switch (busType.ToLower())
+        {
+            case "rabbitmq":
+                return Bus.Factory.CreateUsingRabbitMq(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            case "servicebus":
+                return Bus.Factory.CreateUsingAzureServiceBus(cfg =>
+                {
+                    registrationAction(cfg, null);
+                });
+            default:
+                throw new ArgumentException("Invalid bus type");
+        }
+    }
+}
+```
+
+### Example Usage in API
+
+```csharp
+// MyController.cs
+[ApiController]
+[Route("[controller]")]
+public class MyController : ControllerBase
+{
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public MyController(IPublishEndpoint publishEndpoint)
+    {
+        _publishEndpoint = publishEndpoint;
+    }
+
+    [HttpPost("publish")]
+    public async Task<IActionResult> Publish(FilterableMessage message)
+    {
+        await _publishEndpoint.Publish(message);
+        return Ok();
+    }
+}
+```
+
+### Explanation
+
+1. **FilterableMessage**: The message model includes additional properties such as `Priority` and `Type` to support complex filtering.
+
+2. **ComplexFilteredProcessingConsumer**: The consumer accepts a filter condition function, which is a more flexible way to define complex filtering logic. It processes and republishes messages that match the filter condition.
+
+3. **Startup Configuration**: The `ComplexFilteredProcessingConsumer` is registered with the RabbitMQ bus. The filter condition checks if the message has a priority greater than 5 and is of type "Important".
+
+4. **Bus Configuration**: The `BusConfigurator` sets up the RabbitMQ bus with the appropriate configuration.
+
+5. **Controller for Publishing**: A simple API controller to publish messages to the queue for testing.
+
+This setup allows for complex filtering by using a flexible condition function, enabling the consumer to handle more sophisticated filtering logic. Adjust the filtering and processing logic according to your specific requirements.
