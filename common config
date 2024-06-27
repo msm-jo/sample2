@@ -1,0 +1,137 @@
+
+
+### Step 1: Create a Common Bus Configuration Method
+
+Define a common method to configure the bus. This method will handle the configuration for both RabbitMQ and Azure Service Bus based on the provided configuration.
+
+```csharp
+// CommonBusConfigurator.cs
+public static class CommonBusConfigurator
+{
+    public static void ConfigureBus(IBusRegistrationConfigurator configurator, Config config)
+    {
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                    {
+                        e.UseFilter(new FilterMiddleware<TMessage>(filterPredicate));
+                        e.PrefetchCount = 16;
+                        e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+            case TransportType.AzureServiceBus:
+                configurator.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                    {
+                        e.UseFilter(new FilterMiddleware<TMessage>(filterPredicate));
+                        e.PrefetchCount = 16;
+                        e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+            default:
+                throw new ArgumentException("Invalid transport type");
+        }
+    }
+}
+```
+
+### Step 2: Refactor Your Service Registration Methods
+
+Update your service registration methods to use the common bus configuration method.
+
+```csharp
+// Startup.cs or any relevant configuration file
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddMassTransit(x =>
+        {
+            // Register consumers
+            x.AddConsumer<TConsumer>();
+
+            // Common bus configuration
+            CommonBusConfigurator.ConfigureBus(x, config);
+        });
+
+        services.AddMassTransitHostedService();
+
+        // Register other services
+        services.AddTransient<Publisher>();
+        services.AddTransient<IMessageSendingService, MessageSendingService>();
+        services.AddSingleton(config);
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure the application
+    }
+}
+```
+
+### Step 3: Implement the Filter Middleware (if not already implemented)
+
+Make sure your `FilterMiddleware` class is implemented correctly to handle the filtering logic.
+
+```csharp
+// FilterMiddleware.cs
+public class FilterMiddleware<TMessage> : IFilter<ConsumeContext<TMessage>> where TMessage : class
+{
+    private readonly Func<TMessage, bool> _filterPredicate;
+
+    public FilterMiddleware(Func<TMessage, bool> filterPredicate)
+    {
+        _filterPredicate = filterPredicate;
+    }
+
+    public async Task Send(ConsumeContext<TMessage> context, IPipe<ConsumeContext<TMessage>> next)
+    {
+        if (_filterPredicate(context.Message))
+        {
+            await next.Send(context);
+        }
+        else
+        {
+            // Optionally handle messages that don't match the filter
+        }
+    }
+
+    public void Probe(ProbeContext context)
+    {
+        context.CreateFilterScope("FilterMiddleware");
+    }
+}
+```
+
+### Explanation
+
+1. **CommonBusConfigurator**: This class contains a static method `ConfigureBus` which sets up the MassTransit configuration for both RabbitMQ and Azure Service Bus based on the provided `config`.
+
+2. **Service Registration**: The `ConfigureServices` method in `Startup.cs` uses the `CommonBusConfigurator.ConfigureBus` method to configure MassTransit. This ensures that all consumers and endpoints use the same bus configuration logic.
+
+3. **Filter Middleware**: The `FilterMiddleware` class implements the filtering logic. It uses a predicate function to determine whether a message should be processed or not.
+
+### Benefits
+
+- **Reusability**: The common bus configuration method can be reused across different parts of your application, reducing duplication.
+- **Maintainability**: Centralizing the configuration logic makes it easier to update and maintain.
+- **Flexibility**: This approach allows for complex filtering and custom processing logic to be applied consistently across different consumers and publishers.
+
+By following these steps, you can create a clean, reusable, and maintainable bus configuration for your MassTransit setup.
