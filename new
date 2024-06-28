@@ -1,0 +1,179 @@
+Sure, we can simplify the setup by removing the `processMessage` logic and only focusing on the filter condition. Here's how you can refactor the code accordingly:
+
+### Step 1: Update the Generic Consumer
+
+Update the `GenericConsumer` class to only handle the filter condition.
+
+```csharp
+public class GenericConsumer<TMessage> : IConsumer<TMessage> where TMessage : class
+{
+    private readonly Func<TMessage, bool> _filterCondition;
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public GenericConsumer(Func<TMessage, bool> filterCondition, IPublishEndpoint publishEndpoint)
+    {
+        _filterCondition = filterCondition;
+        _publishEndpoint = publishEndpoint;
+    }
+
+    public async Task Consume(ConsumeContext<TMessage> context)
+    {
+        if (_filterCondition == null || _filterCondition(context.Message))
+        {
+            await _publishEndpoint.Publish(context.Message);
+        }
+    }
+}
+```
+
+### Step 2: Refactor the Common Bus Configurator
+
+Update the `CommonBusConfigurator` class to configure the consumer with just the filter condition.
+
+```csharp
+public static class CommonBusConfigurator
+{
+    public static void ConfigureBus<TMessage, TConsumer>(IBusRegistrationConfigurator configurator, BusConfig config, Func<TMessage, bool> filterCondition = null)
+        where TMessage : class
+        where TConsumer : class, IConsumer<TMessage>
+    {
+        configurator.AddConsumer(() => new GenericConsumer<TMessage>(filterCondition, configurator.GetRequiredService<IPublishEndpoint>()));
+
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                    {
+                        if (filterCondition != null)
+                        {
+                            e.UseFilter(new FilterMiddleware<TMessage>(filterCondition));
+                        }
+                        e.PrefetchCount = 16;
+                        e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+
+            case TransportType.AzureServiceBus:
+                configurator.UsingAzureServiceBus((context, cfg) =>
+                {
+                    cfg.Host(config.ConnectionString);
+
+                    cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                    {
+                        if (filterCondition != null)
+                        {
+                            e.UseFilter(new FilterMiddleware<TMessage>(filterCondition));
+                        }
+                        e.PrefetchCount = 16;
+                        e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+
+            default:
+                throw new ArgumentException("Invalid transport type");
+        }
+    }
+}
+```
+
+### Step 3: Update the Filter Middleware
+
+Ensure the filter middleware is implemented correctly.
+
+```csharp
+public class FilterMiddleware<TMessage> : IFilter<ConsumeContext<TMessage>> where TMessage : class
+{
+    private readonly Func<TMessage, bool> _filterPredicate;
+
+    public FilterMiddleware(Func<TMessage, bool> filterPredicate)
+    {
+        _filterPredicate = filterPredicate;
+    }
+
+    public async Task Send(ConsumeContext<TMessage> context, IPipe<ConsumeContext<TMessage>> next)
+    {
+        if (_filterPredicate(context.Message))
+        {
+            await next.Send(context);
+        }
+    }
+
+    public void Probe(ProbeContext context)
+    {
+        context.CreateFilterScope("FilterMiddleware");
+    }
+}
+```
+
+### Step 4: Configure Services in Startup
+
+Update the `Startup` class to configure services using the new setup.
+
+```csharp
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        var configs = new List<BusConfig>
+        {
+            new BusConfig
+            {
+                Transport = TransportType.RabbitMQ,
+                ConnectionString = "rabbitmq://localhost",
+                UserName = "guest",
+                Password = "guest",
+                ReceiverQueue = "queue1",
+                RetryCount = 5,
+                RetryInterval = TimeSpan.FromSeconds(10)
+            },
+            // Add other configurations here
+        };
+
+        services.AddMassTransit(x =>
+        {
+            foreach (var config in configs)
+            {
+                CommonBusConfigurator.ConfigureBus<Message1, GenericConsumer<Message1>>(x, config, message => message.Priority > 5);
+
+                CommonBusConfigurator.ConfigureBus<Message2, GenericConsumer<Message2>>(x, config, message => message.Type == "Important");
+            }
+        });
+
+        services.AddMassTransitHostedService();
+
+        // Register other services
+        services.AddTransient<Publisher>();
+        services.AddTransient<IMessageSendingService, MessageSendingService>();
+        services.AddSingleton(configs);
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure the application
+    }
+}
+```
+
+### Explanation
+
+1. **GenericConsumer**: This consumer class takes only the filter condition as a constructor parameter. The `Consume` method applies the filter and republishes the message if it matches the filter condition.
+
+2. **CommonBusConfigurator**: This static class provides a method to configure the bus using the provided configuration. It configures the consumer with the filter condition if provided.
+
+3. **FilterMiddleware**: This middleware class applies the filter condition to the messages.
+
+4. **Startup Configuration**: The `ConfigureServices` method in `Startup.cs` sets up the MassTransit configuration. It iterates over a list of configurations and uses the `CommonBusConfigurator` to configure the bus for different consumer/message types, passing the filter conditions directly.
+
+By following this approach, you can pass the filter condition inside the `Consume` method of the consumer, making the filtering logic more flexible and encapsulated within the consumer itself. Adjust the configurations, consumers, and message types according to your specific requirements.
