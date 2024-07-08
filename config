@@ -1,0 +1,233 @@
+To register a list of simple publishers, a list of consumers with queue names, filters, and a list of request-response models in a .NET 8 project, you need to ensure that your MassTransit setup can handle these configurations effectively. Here's a detailed guide:
+
+### Step 1: Define Models in .NET Standard Library
+
+**MessagingConfig.cs**:
+```csharp
+using System;
+
+public class MessagingConfig
+{
+    public string Host { get; set; }
+    public string UserName { get; set; }
+    public string Password { get; set; }
+    public int RetryCount { get; set; }
+    public TimeSpan RetryInterval { get; set; }
+}
+```
+
+**MessageTypes.cs**:
+```csharp
+public class RequestMessage
+{
+    public string Text { get; set; }
+    public Guid CorrelationId { get; set; }
+}
+
+public class ResponseMessage
+{
+    public string ResponseText { get; set; }
+    public Guid CorrelationId { get; set; }
+}
+```
+
+### Step 2: Define Consumer, Publisher, and Filter Predicate
+
+**SimpleConsumer.cs**:
+```csharp
+using MassTransit;
+using System.Threading.Tasks;
+
+public class SimpleConsumer : IConsumer<RequestMessage>
+{
+    public async Task Consume(ConsumeContext<RequestMessage> context)
+    {
+        var response = new ResponseMessage
+        {
+            ResponseText = $"Received: {context.Message.Text}",
+            CorrelationId = context.Message.CorrelationId
+        };
+
+        await context.RespondAsync(response);
+    }
+}
+```
+
+**SimplePublisher.cs**:
+```csharp
+using MassTransit;
+using System;
+using System.Threading.Tasks;
+
+public class SimplePublisher
+{
+    private readonly IRequestClient<RequestMessage> _client;
+
+    public SimplePublisher(IRequestClient<RequestMessage> client)
+    {
+        _client = client;
+    }
+
+    public async Task<ResponseMessage> SendRequestAsync(string text)
+    {
+        var request = new RequestMessage
+        {
+            Text = text,
+            CorrelationId = Guid.NewGuid()
+        };
+
+        var response = await _client.GetResponse<ResponseMessage>(request);
+        return response.Message;
+    }
+}
+```
+
+### Step 3: Define Common Configurator
+
+**CommonBusConfigurator.cs**:
+```csharp
+using MassTransit;
+using MassTransit.RabbitMqTransport;
+using System;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+public static class CommonBusConfigurator
+{
+    public static void ConfigureJsonSerializerOptions(IRabbitMqBusFactoryConfigurator busConfig)
+    {
+        busConfig.ConfigureJsonSerializerOptions(o =>
+        {
+            o.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals | JsonNumberHandling.AllowReadingFromString;
+            return o;
+        });
+    }
+
+    public static void ConfigureBus(
+        IBusRegistrationConfigurator configurator,
+        MessagingConfig config,
+        List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType)> consumerConfigs,
+        List<(Type PublisherType, Type RequestType, Type ResponseType)> publisherConfigs,
+        Func<ConsumeContext<RequestMessage>, bool> filterPredicate)
+    {
+        configurator.UsingRabbitMq((context, cfg) =>
+        {
+            ConfigureJsonSerializerOptions(cfg);
+
+            cfg.Host(config.Host, h =>
+            {
+                h.Username(config.UserName);
+                h.Password(config.Password);
+            });
+
+            foreach (var (queueName, consumerType, requestType, responseType) in consumerConfigs)
+            {
+                cfg.ReceiveEndpoint(queueName, e =>
+                {
+                    var consumerMethod = typeof(IRabbitMqBusFactoryConfigurator)
+                        .GetMethod(nameof(IRabbitMqBusFactoryConfigurator.ConfigureConsumer))
+                        .MakeGenericMethod(consumerType);
+                    consumerMethod.Invoke(cfg, new object[] { context });
+
+                    if (filterPredicate != null)
+                    {
+                        e.UseFilter(new PredicateFilter<RequestMessage>(filterPredicate));
+                    }
+
+                    e.PrefetchCount = 16;
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                });
+            }
+        });
+
+        foreach (var (publisherType, requestType, responseType) in publisherConfigs)
+        {
+            configurator.AddRequestClient(requestType);
+        }
+    }
+}
+```
+
+### Step 4: Implement the Predicate Filter
+
+**PredicateFilter.cs**:
+```csharp
+using MassTransit;
+using System.Threading.Tasks;
+
+public class PredicateFilter<T> : IFilter<ConsumeContext<T>>
+{
+    private readonly Func<ConsumeContext<T>, bool> _predicate;
+
+    public PredicateFilter(Func<ConsumeContext<T>, bool> predicate)
+    {
+        _predicate = predicate;
+    }
+
+    public async Task Send(ConsumeContext<T> context, IPipe<ConsumeContext<T>> next)
+    {
+        if (_predicate(context))
+        {
+            await next.Send(context);
+        }
+    }
+
+    public void Probe(ProbeContext context)
+    {
+        context.CreateFilterScope("PredicateFilter");
+    }
+}
+```
+
+### Step 5: Configure MassTransit in .NET 8 Project
+
+**Program.cs**:
+```csharp
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Collections.Generic;
+using YourNamespace; // Replace with your actual namespace
+
+var builder = WebApplication.CreateBuilder(args);
+
+var messagingConfig = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType)>
+{
+    ("queue1", typeof(SimpleConsumer), typeof(RequestMessage), typeof(ResponseMessage))
+};
+
+var publisherConfigs = new List<(Type PublisherType, Type RequestType, Type ResponseType)>
+{
+    (typeof(SimplePublisher), typeof(RequestMessage), typeof(ResponseMessage))
+};
+
+Func<ConsumeContext<RequestMessage>, bool> filterPredicate = context =>
+{
+    return context.Message.Text.Contains("filter");
+};
+
+builder.Services.AddMassTransit(x =>
+{
+    CommonBusConfigurator.ConfigureBus(x, messagingConfig, consumerConfigs, publisherConfigs, filterPredicate);
+});
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+app.MapGet("/", () => "Hello World!");
+
+app.Run();
+```
+
+### Summary
+
+1. **Define Models in .NET Standard Library**: Create `MessagingConfig`, `RequestMessage`, and `ResponseMessage`.
+2. **Define Consumer, Publisher, and Filter Predicate**: Implement `SimpleConsumer`, `SimplePublisher`, and `PredicateFilter`.
+3. **Define Common Configurator**: Create a static class `CommonBusConfigurator` to configure MassTransit with JSON serializer options, consumers, publishers, and filter predicates.
+4. **Configure MassTransit in .NET 8 Project**: Use the common configurator to set up MassTransit in your .NET 8 project, registering consumers and publishers with the required queue names and filters.
+
+This setup ensures that you can manage multiple consumers and publishers with different queues, applying filter predicates as needed, in a clean and maintainable way.
