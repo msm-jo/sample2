@@ -1,0 +1,180 @@
+To register publishers, consumers, and queue names using tuples, you can define a configuration model that includes lists of tuples. These tuples will hold the necessary details for the consumers and publishers. Here's a detailed guide on how to achieve this:
+
+### Step 1: Define Models in .NET Standard Library
+
+**MessagingConfig.cs**:
+```csharp
+using System;
+
+public class MessagingConfig
+{
+    public string Host { get; set; }
+    public string UserName { get; set; }
+    public string Password { get; set; }
+    public int RetryCount { get; set; }
+    public TimeSpan RetryInterval { get; set; }
+}
+```
+
+### Step 2: Define Common Configurator
+
+**CommonBusConfigurator.cs**:
+```csharp
+using MassTransit;
+using MassTransit.RabbitMqTransport;
+using System;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+public static class CommonBusConfigurator
+{
+    public static void ConfigureJsonSerializerOptions(IRabbitMqBusFactoryConfigurator busConfig)
+    {
+        busConfig.ConfigureJsonSerializerOptions(o =>
+        {
+            o.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals | JsonNumberHandling.AllowReadingFromString;
+            return o;
+        });
+    }
+
+    public static void ConfigureBus(
+        IBusRegistrationConfigurator configurator,
+        MessagingConfig config,
+        List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType)> consumerConfigs,
+        List<(Type PublisherType, Type RequestType, Type ResponseType)> publisherConfigs)
+    {
+        configurator.UsingRabbitMq((context, cfg) =>
+        {
+            ConfigureJsonSerializerOptions(cfg);
+
+            cfg.Host(config.Host, h =>
+            {
+                h.Username(config.UserName);
+                h.Password(config.Password);
+            });
+
+            foreach (var (queueName, consumerType, requestType, responseType) in consumerConfigs)
+            {
+                cfg.ReceiveEndpoint(queueName, e =>
+                {
+                    var consumerMethod = typeof(IRabbitMqBusFactoryConfigurator)
+                        .GetMethod(nameof(IRabbitMqBusFactoryConfigurator.ConfigureConsumer))
+                        .MakeGenericMethod(consumerType);
+                    consumerMethod.Invoke(cfg, new object[] { context });
+
+                    e.PrefetchCount = 16;
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                });
+            }
+        });
+
+        foreach (var (publisherType, requestType, responseType) in publisherConfigs)
+        {
+            configurator.AddRequestClient(requestType);
+        }
+    }
+}
+```
+
+### Step 3: Configure MassTransit in .NET Projects
+
+#### For .NET Framework Project
+
+1. **Add a reference to the .NET Standard library**:
+   - Right-click on the .NET Framework project and select `Add` -> `Reference`.
+   - Browse and add the .NET Standard library project.
+
+2. **Install necessary NuGet packages**:
+   - Install `MassTransit` and `MassTransit.RabbitMQ` packages compatible with .NET Framework 4.7.2.
+
+3. **Configure MassTransit using the common configuration**:
+   ```csharp
+   using System;
+   using System.Collections.Generic;
+   using Autofac;
+   using MassTransit;
+   using MassTransit.RabbitMqTransport;
+   using YourNamespace; // Replace with your actual namespace
+
+   public class Program
+   {
+       public static void Main()
+       {
+           var builder = new ContainerBuilder();
+           var container = builder.Build();
+
+           var messagingConfig = new MessagingConfig
+           {
+               Host = "rabbitmq://localhost",
+               UserName = "guest",
+               Password = "guest",
+               RetryCount = 5,
+               RetryInterval = TimeSpan.FromSeconds(5)
+           };
+
+           var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType)>
+           {
+               ("queue1", typeof(Consumer1), typeof(RequestMessage1), typeof(ResponseMessage1)),
+               ("queue2", typeof(Consumer2), typeof(RequestMessage2), typeof(ResponseMessage2))
+           };
+
+           var publisherConfigs = new List<(Type PublisherType, Type RequestType, Type ResponseType)>
+           {
+               (typeof(Publisher1), typeof(RequestMessage1), typeof(ResponseMessage1))
+           };
+
+           var busControl = Bus.Factory.CreateUsingRabbitMq(cfg =>
+           {
+               CommonBusConfigurator.ConfigureBus(cfg, messagingConfig, consumerConfigs, publisherConfigs);
+           });
+
+           busControl.Start();
+       }
+   }
+   ```
+
+#### For .NET 6, 7, 8 Project
+
+1. **Add a reference to the .NET Standard library**:
+   - Right-click on the .NET Core/5/6/7 project and select `Add` -> `Project Reference`.
+   - Select the .NET Standard library project.
+
+2. **Install necessary NuGet packages**:
+   - Install `MassTransit` and `MassTransit.RabbitMQ` packages compatible with .NET 6, 7, or 8.
+
+3. **Configure MassTransit using the common configuration**:
+   ```csharp
+   var builder = WebApplication.CreateBuilder(args);
+
+   var messagingConfig = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+   var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType)>
+   {
+       ("queue1", typeof(Consumer1), typeof(RequestMessage1), typeof(ResponseMessage1)),
+       ("queue2", typeof(Consumer2), typeof(RequestMessage2), typeof(ResponseMessage2))
+   };
+
+   var publisherConfigs = new List<(Type PublisherType, Type RequestType, Type ResponseType)>
+   {
+       (typeof(Publisher1), typeof(RequestMessage1), typeof(ResponseMessage1))
+   };
+
+   builder.Services.AddMassTransit(x =>
+   {
+       CommonBusConfigurator.ConfigureBus(x, messagingConfig, consumerConfigs, publisherConfigs);
+   });
+
+   builder.Services.AddMassTransitHostedService();
+
+   var app = builder.Build();
+
+   app.Run();
+   ```
+
+### Summary
+
+1. **Define Models in .NET Standard Library**: Create `MessagingConfig` and use tuples for configuring consumers and publishers.
+2. **Define Common Configurator**: Create a static class `CommonBusConfigurator` to configure MassTransit with JSON serializer options, consumers, and publishers using tuples.
+3. **Configure MassTransit in .NET Projects**: Use the common configurator in both .NET Framework and .NET Core/5/6/7/8 projects.
+
+By following these steps, you can manage multiple consumers and publishers with different queues using tuples, ensuring a clean and maintainable configuration for MassTransit across various .NET versions.
